@@ -1,0 +1,145 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Simple workflow 
+
+Parameters:
+  StatesExecutionRoleArn:
+    Type: String
+  BatchSubmitLambdaArn:
+    Type: String
+
+Resources:
+  SubmitStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      StateMachineName: !Sub "Submit${AWS::StackName}"
+      RoleArn: !Ref StatesExecutionRoleArn #required
+      DefinitionString: !Sub |-
+        {
+          "Comment": "A simple example that submits a Job to AWS Batch",
+          "StartAt": "GetOutputs",
+          "States": {
+            "GetOutputs": {
+              "Type": "Task",
+              "InputPath": "$",
+              "ResultPath": "$.result",
+              "Resource": "${BatchSubmitLambdaArn}",
+              "Parameters": {
+                "Outputs.$": "$.Outputs"
+              },
+              "Next": "CheckOutputs"
+            },
+            "CheckOutputs": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.result",
+                  "BooleanEquals": true,
+                  "Next": "GetInputs"
+                }
+              ],
+              "Default": "EndState"
+            },
+            "GetInputs": {
+              "Type": "Task",
+              "InputPath": "$",
+              "ResultPath": "$.result",
+              "Resource": "${BatchSubmitLambdaArn}",
+              "Parameters": {
+                "Outputs.$": "$.Inputs"
+              },
+              "Next": "CheckInputs"
+            },
+            "CheckInputs": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.result",
+                  "BooleanEquals": false,
+                  "Next": "SubmitJob"
+                }
+              ],
+              "Default": "WaitState"
+            },
+            "WaitState": {
+              "Type": "Wait",
+              "Seconds": 120,
+              "Next": "GetInputs"
+            },
+            "SubmitJob": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "InputPath": "$",
+              "Parameters": {
+                "JobName.$": "$.JobName",
+                "JobDefinition.$": "$.JobDefinition",
+                "JobQueue.$": "$.JobQueue",
+                "ContainerOverrides.$": "$.ContainerOverrides",
+                "RetryStrategy.$": "$.RetryStrategy"
+              },
+              "Next": "EndState"
+            },
+            "EndState": {
+              "Type": "Succeed"
+            }
+          }
+        }
+        
+  MapStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      StateMachineName: !Sub "Map${AWS::StackName}"
+      RoleArn: !Ref StatesExecutionRoleArn #required
+      DefinitionString: !Sub |-
+        {
+          "Comment": "Map Genomics Workflow",
+          "StartAt": "MapAll",
+          "States": {
+            "MapAll": {
+              "Type": "Map",
+              "InputPath": "$",
+              "ItemsPath": "$.items[0]",
+              "MaxConcurrency": 0,
+              "ResultPath": null,
+              "Parameters": {
+                "all.$": "$",
+                "result.$": "$.result",
+                "item.$": "$$.Map.Item.Value"
+              },
+              "Iterator": {
+                "StartAt": "Execute",
+                "States": {
+                  "Execute": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "data.$": "$.all.data",
+                        "statemachine.$": "$.all.statemachine[1:]",
+                        "items.$": "$.all.items[1:]",
+                        "result.$": "States.Array($.item, $.result)"
+                      },
+                      "StateMachineArn.$": "$.all.statemachine[0]"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+        
+Outputs:
+  SubmitStateMachineArn:
+    Description: Workflow statemachine ARN
+    Value: !GetAtt SubmitStateMachine.Arn
+  MapStateMachineArn:
+    Description: Workflow statemachine ARN
+    Value: !GetAtt MapStateMachine.Arn
+...
+
+

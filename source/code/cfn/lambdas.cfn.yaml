@@ -1,0 +1,97 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Lambda Functions
+
+Parameters:
+  Project:
+    Type: String
+  LambdaRoleArn:
+    Type: String
+  BatchSubmitLambdaRoleArn:
+    Type: String
+
+Resources:
+  SplitLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: index.lambda_handler
+      Role: !Ref LambdaRoleArn
+      FunctionName: !Sub ${Project}SplitLambda
+      Code:
+        ZipFile: !Sub |
+                def create_range(l,splits,skip_start=((2**29)-100),skip_end=((2**29)+100)):
+                        step = l / splits 
+                        l_arr = [] 
+                        for i in range(0,splits):
+                                start = round(step*i)+1 
+                                end = round(step*(i+1))
+
+                                if start <= skip_start and end >= skip_start:
+                                        if start <= skip_end and end >= skip_end:
+                                                l_arr.append("{0}-{1}".format(start,skip_start))
+                                                l_arr.append("{0}-{1}".format(skip_end,end))
+                                        else:
+                                                l_arr.append("{0}-{1}".format(start,skip_start))
+                                        
+                                elif start <= skip_end and end >= skip_end:
+                                        l_arr.append("{0}-{1}".format(skip_end,end))
+
+                                else:
+                                        l_arr.append("{0}-{1}".format(start,end))
+                        return l_arr
+
+                def lambda_handler(event, context):
+                        l = event['len']
+                        splits = event['splits']
+                        l_arr = create_range(l,splits)
+                        return {
+                                "indices": l_arr   
+                        } 
+
+                
+      Runtime: python3.8 
+
+  BatchSubmitLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: index.lambda_handler
+      Role: !Ref BatchSubmitLambdaRoleArn
+      FunctionName: !Sub ${Project}BatchSubmitLambda
+      Code:
+        ZipFile: | 
+                import boto3
+                import botocore
+                import json
+
+                s3 = boto3.client('s3')
+
+                def lambda_handler(event, context):
+                    
+                    print("Received event: " + json.dumps(event, indent=2))
+                    try:
+                        for key in event['Outputs']['Keys']:
+                            if 'sample' in event['Outputs']:
+                                key = key.replace("{sample}",event['Outputs']['sample'])
+                            if 'chrom' in event['Outputs']:
+                                key = key.replace("{chrom}",event['Outputs']['chrom'])
+                            if 'range' in event['Outputs']:
+                                key = key.replace("{range}",event['Outputs']['range'])
+                            s3.head_object(Bucket=event['Outputs']['Bucket'],Key=key)
+
+                    except botocore.exceptions.ClientError as errorStdOut:
+                        if errorStdOut.response['Error']['Code'] == "404":
+                            return True
+                    return False
+
+      Runtime: python3.8 
+
+Outputs:
+  SplitLambdaArn:
+    Description: SplitLambda ARN
+    Value: !GetAtt SplitLambda.Arn
+
+  BatchSubmitLambdaArn:
+    Description: BatchSubmitLambda ARN
+    Value: !GetAtt BatchSubmitLambda.Arn
+...

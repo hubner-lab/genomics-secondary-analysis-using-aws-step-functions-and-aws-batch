@@ -1,0 +1,40 @@
+{
+  "Comment": "Map Genomics Workflow",
+  "StartAt": "MapAll",
+  "States": {
+    "MapAll": {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemsPath": "$.items[0]",
+      "MaxConcurrency": 0,
+      "ResultPath": null,
+      "Parameters": {
+        "all.$": "$",
+        "result.$": "$.result",
+        "item.$": "$$.Map.Item.Value"
+      },
+      "Iterator": {
+        "StartAt": "Execute",
+        "States": {
+          "Execute": {
+            "Type": "Task",
+            "InputPath": "$",
+            "ResultPath": null,
+            "Resource": "arn:aws:states:::states:startExecution",
+            "Parameters": {
+              "Input": {
+		"data":"$.data",
+                "statemachine.$": "$.all.statemachine[1:]",
+                "items.$": "$.all.items[1:]",
+                "result.$": "States.Array($.item, $.result)"
+              },
+              "StateMachineArn.$": "$.all.statemachine[0]"
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}
