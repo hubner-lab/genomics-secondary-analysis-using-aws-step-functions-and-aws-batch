@@ -34,7 +34,6 @@ Mappings:
 
 
 Resources:
-
   # S3 bucket used to store intermediate and final results from workflows
   JobResultsBucket:
     Type: AWS::S3::Bucket
@@ -90,6 +89,12 @@ Resources:
         SamplesBucket: !Ref SamplesBucket
         JobResultsBucket: !Ref JobResultsBucket
         ZoneStackName: !Ref ZoneStackName
+        WorkflowBucket: 
+          Fn::ImportValue: 
+            !Sub "${ZoneStackName}-WorkflowBucket"
+        InputBucket: 
+          Fn::ImportValue: 
+            !Sub "${ZoneStackName}-InputBucket"
       TemplateURL:
         Fn::Sub:
           - "${TemplateRootUrl}/core/iam.cfn.yaml"
@@ -99,6 +104,87 @@ Resources:
                 - ZoneBucket:
                     Fn::ImportValue:
                       !Sub ${ZoneStackName}-ZoneBucket
+
+  LambdaFunctions:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref Project
+        LambdaRoleArn: !GetAtt IamRoles.Outputs.LambdaRoleArn
+        BatchSubmitLambdaRoleArn: !GetAtt IamRoles.Outputs.BatchSubmitLambdaRoleArn
+      TemplateURL:
+        Fn::Sub:
+          - "${TemplateRootUrl}/lambdas.cfn.yaml"
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/code"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
+
+  BasicS3LinkedLustreFileSystem:
+    Type: "AWS::FSx::FileSystem"
+    Properties:
+      FileSystemType: "LUSTRE"
+      StorageCapacity: 18000
+      SubnetIds: 
+        - !GetAtt Networking.Outputs.PrivateSubnet1Id 
+      SecurityGroupIds: 
+        - !GetAtt Networking.Outputs.SecurityGroupIds
+      LustreConfiguration:
+        AutoImportPolicy: "NEW_CHANGED"
+        DeploymentType: "SCRATCH_1"
+        ImportPath: 
+          Fn::Sub:
+            - "s3://${WorkflowBucket}/markdup"
+            - WorkflowBucket:
+                Fn::ImportValue:
+                  !Sub ${ZoneStackName}-WorkflowBucket
+
+  #InputS3LinkedLustreFileSystem:
+    #Type: "AWS::FSx::FileSystem"
+    #Properties:
+      #FileSystemType: "LUSTRE"
+      #StorageCapacity: 14400 
+      #SubnetIds: 
+        #- !GetAtt Networking.Outputs.PrivateSubnet1Id 
+      #SecurityGroupIds: 
+        #- !GetAtt Networking.Outputs.SecurityGroupIds
+      #LustreConfiguration:
+        #AutoImportPolicy: "NEW_CHANGED"
+        #DeploymentType: "SCRATCH_1"
+        #ImportPath: 
+          #Fn::Sub:
+            #- "s3://${InputBucket}"
+            #- InputBucket:
+                #Fn::ImportValue:
+                  #!Sub ${ZoneStackName}-InputBucket
+        
+  #SamplesS3LinkedLustreFileSystem:
+    #Type: "AWS::FSx::FileSystem"
+    #Properties:
+      #FileSystemType: "LUSTRE"
+      #StorageCapacity: 14400 
+      #SubnetIds: 
+        #- !GetAtt Networking.Outputs.PrivateSubnet1Id 
+      #SecurityGroupIds: 
+        #- !GetAtt Networking.Outputs.SecurityGroupIds
+      #LustreConfiguration:
+        #AutoImportPolicy: "NEW_CHANGED"
+        #DeploymentType: "SCRATCH_1"
+        #ImportPath: 
+          #Fn::Sub:
+            #- "s3://${WorkflowBucket}/samples"
+            #- WorkflowBucket:
+                #Fn::ImportValue:
+                  #!Sub ${ZoneStackName}-WorkflowBucket
+        #ExportPath: 
+          #Fn::Sub:
+            #- "s3://${WorkflowBucket}/samples"
+            #- WorkflowBucket:
+                #Fn::ImportValue:
+                  #!Sub ${ZoneStackName}-WorkflowBucket
 
   # Core Batch stack.
   # Creates AWS Batch resources for job execution (Compute Environments and Job Queues)
@@ -114,6 +200,11 @@ Resources:
         SubnetIds: !GetAtt Networking.Outputs.PrivateSubnetIds  # launch in private subnets for extra security
         SecurityGroupIds: !GetAtt Networking.Outputs.SecurityGroupIds
         ZoneStackName: !Ref ZoneStackName
+
+        FSxLustreWorkingFileSystem: !Ref BasicS3LinkedLustreFileSystem 
+        #FSxLustreSourceDataFileSystem: !Ref InputS3LinkedLustreFileSystem
+        #FSxLustreSourceFileSystem: !Ref SamplesS3LinkedLustreFileSystem
+
       TemplateURL:
         Fn::Sub:
           - "${TemplateRootUrl}/core/batch.cfn.yaml"
@@ -140,10 +231,15 @@ Resources:
           - Host:
               SourcePath: /opt/miniconda
             Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
         MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
           - ContainerPath: /opt/miniconda
             SourceVolume: awscli
-  
+
   BatchJobDefinitionSamtools:
     Type: "AWS::Batch::JobDefinition"
     Properties:
@@ -157,7 +253,12 @@ Resources:
           - Host:
               SourcePath: /opt/miniconda
             Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
         MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
           - ContainerPath: /opt/miniconda
             SourceVolume: awscli
   
@@ -174,24 +275,168 @@ Resources:
           - Host:
               SourcePath: /opt/miniconda
             Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
         MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
+          - ContainerPath: /opt/miniconda
+            SourceVolume: awscli
+
+  BatchJobDefinitionGatk:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      JobDefinitionName: !Sub ${ProjectLowerCase}-gatk
+      Type: container #required
+      ContainerProperties:
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectLowerCase}-gatk
+        Vcpus: 8
+        Memory: 16000
+        Volumes:
+          - Host:
+              SourcePath: /opt/miniconda
+            Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
+        MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
+          - ContainerPath: /opt/miniconda
+            SourceVolume: awscli
+
+
+  BatchJobDefinitionFastp:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      JobDefinitionName: !Sub ${ProjectLowerCase}-fastp
+      Type: container #required
+      ContainerProperties:
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectLowerCase}-fastp
+        Vcpus: 8
+        Memory: 16000
+        Volumes:
+          - Host:
+              SourcePath: /opt/miniconda
+            Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
+        MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
+          - ContainerPath: /opt/miniconda
+            SourceVolume: awscli
+
+  BatchJobDefinitionConcat:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      JobDefinitionName: !Sub ${ProjectLowerCase}-concat
+      Type: container #required
+      ContainerProperties:
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectLowerCase}-concat
+        Vcpus: 8
+        Memory: 16000
+        Volumes:
+          - Host:
+              SourcePath: /opt/miniconda
+            Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
+        MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
+          - ContainerPath: /opt/miniconda
+            SourceVolume: awscli
+
+  BatchJobDefinitionSamtoolsIndex:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      JobDefinitionName: !Sub ${ProjectLowerCase}-samtools-index
+      Type: container #required
+      ContainerProperties:
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectLowerCase}-samtools-index
+        Vcpus: 8
+        Memory: 16000
+        Volumes:
+          - Host:
+              SourcePath: /opt/miniconda
+            Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
+        MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
+          - ContainerPath: /opt/miniconda
+            SourceVolume: awscli
+
+  BatchJobDefinitionBwaMem2:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      JobDefinitionName: !Sub ${ProjectLowerCase}-bwa-mem2
+      Type: container #required
+      ContainerProperties:
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectLowerCase}-bwa-mem2
+        Vcpus: 8
+        Memory: 16000
+        Volumes:
+          - Host:
+              SourcePath: /opt/miniconda
+            Name: awscli
+          - Host:
+              SourcePath: /scratch
+            Name: scratch
+        MountPoints:
+          - ContainerPath: /scratch
+            SourceVolume: scratch
           - ContainerPath: /opt/miniconda
             SourceVolume: awscli
 
   # === WORKFLOW DEFININTIONS ===
+  # === WORKFLOW DEFININTIONS ===
   # Creates AWS Step Functions state machines for workflow definitions
   # Add additional definitions here for any new workflows
+  #
+  WorkflowDep:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        StatesExecutionRoleArn: !GetAtt IamRoles.Outputs.StatesExecutionRoleArn
+        BatchSubmitLambdaArn: !GetAtt LambdaFunctions.Outputs.BatchSubmitLambdaArn
+
+      TemplateURL:
+        Fn::Sub:
+          - "${TemplateRootUrl}/workflow-dep.cfn.yaml"
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/code"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
   WorkflowSimple:
     Type: "AWS::CloudFormation::Stack"
     Properties:
       Parameters:
-        InputDataPrefix: !Sub s3://${SamplesBucket}/${SamplesPrefix}
-        OutputDataPrefix: !Sub s3://${JobResultsBucket}
         BatchJobDefinitionBwa: !Ref BatchJobDefinitionBwa
         BatchJobDefinitionSamtools: !Ref BatchJobDefinitionSamtools
         BatchJobDefinitionBcftools: !Ref BatchJobDefinitionBcftools
+        BatchJobDefinitionGatk: !Ref BatchJobDefinitionGatk
+        BatchJobDefinitionFastp: !Ref BatchJobDefinitionFastp
+        BatchJobDefinitionConcat: !Ref BatchJobDefinitionConcat
+        BatchJobDefinitionSamtoolsIndex: !Ref BatchJobDefinitionSamtoolsIndex
+        BatchJobDefinitionBwaMem2: !Ref BatchJobDefinitionBwaMem2
+
         BatchJobQueue: !GetAtt Batch.Outputs.LowPriorityQueue
         StatesExecutionRoleArn: !GetAtt IamRoles.Outputs.StatesExecutionRoleArn
+
+        SplitLambdaArn: !GetAtt LambdaFunctions.Outputs.SplitLambdaArn
+        SubmitStateMachineArn: !GetAtt WorkflowDep.Outputs.SubmitStateMachineArn
+        MapStateMachineArn: !GetAtt WorkflowDep.Outputs.MapStateMachineArn
+
       TemplateURL:
         Fn::Sub:
           - "${TemplateRootUrl}/workflow-variantcalling-simple.cfn.yaml"
@@ -228,9 +473,6 @@ Outputs:
   WorkflowSimpleArn:
     Description: ARN for Simple variant calling workflow
     Value: !GetAtt WorkflowSimple.Outputs.WorkflowArn
-  WorkflowSimpleInput:
-    Description: Example input for Simple variant calling workflow
-    Value: !GetAtt WorkflowSimple.Outputs.WorkflowInput
   DashboardWorkflowSimple:
     Description: CloudWatch Dashboard for Simple variant calling workflow
     Value: !GetAtt DashboardWorkflowSimple.Outputs.Dashboard

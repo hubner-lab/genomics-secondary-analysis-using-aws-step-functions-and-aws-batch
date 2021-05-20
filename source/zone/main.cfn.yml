@@ -11,6 +11,12 @@ Parameters:
   ProjectLowerCase:
     Type: String
     Default: genomicsworkflow
+
+  InputBucket: 
+    Type: String
+
+  WorkflowBucket: 
+    Type: String
     
 Resources:
   # bucket to store common artifacts and resources for the solution (e.g. nested templates)
@@ -431,10 +437,21 @@ Outputs:
   RepoName:
     Description: RepoName
     Value: !Sub ${Repo.Name}
+
   RepoCloneUrl:
     Description: RepoUrl
     Value: !GetAtt Repo.CloneUrlHttp
     Export:
       Name: !Sub ${AWS::StackName}-CodeRepo
+
+  InputBucket:
+    Value: !Ref InputBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-InputBucket
+
+  WorkflowBucket:
+    Value: !Ref WorkflowBucket 
+    Export:
+      Name: !Sub ${AWS::StackName}-WorkflowBucket
 ...
 

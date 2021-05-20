@@ -3,7 +3,7 @@ FROM public.ecr.aws/ubuntu/ubuntu:18.04 AS build
 ARG VERSION=1.9
 
 # Metadata
-LABEL container.base.image="public.ecr.aws/ubuntu/ubuntu:18.04"
+LABEL container.base.image="ubuntu:18.04"
 LABEL software.name="SAMtools"
 LABEL software.version=${VERSION}
 LABEL software.description="Utilities for the Sequence Alignment/Map (SAM/BAM/CRAM) formats"

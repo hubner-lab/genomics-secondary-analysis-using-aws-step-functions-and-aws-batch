@@ -27,8 +27,7 @@ FAILED = 'FAILED'
 
 class CfnResource(object):
 
-    def __init__(self, json_logging=False, log_level='DEBUG', boto_level='ERROR', polling_interval=2, sleep_on_delete=120, ssl_verify=None):
-        self._sleep_on_delete = sleep_on_delete
+    def __init__(self, json_logging=False, log_level='DEBUG', boto_level='ERROR', polling_interval=2):
         self._create_func = None
         self._update_func = None
         self._delete_func = None
@@ -49,18 +48,16 @@ class CfnResource(object):
         self.RequestId = ""
         self.LogicalResourceId = ""
         self.Data = {}
-        self.NoEcho = False
         self._event = {}
         self._context = None
         self._response_url = ""
         self._sam_local = os.getenv('AWS_SAM_LOCAL')
         self._region = os.getenv('AWS_REGION')
-        self._ssl_verify = ssl_verify
         try:
             if not self._sam_local:
-                self._lambda_client = boto3.client('lambda', region_name=self._region, verify=self._ssl_verify)
-                self._events_client = boto3.client('events', region_name=self._region, verify=self._ssl_verify)
-                self._logs_client = boto3.client('logs', region_name=self._region, verify=self._ssl_verify)
+                self._lambda_client = boto3.client('lambda', region_name=self._region)
+                self._events_client = boto3.client('events', region_name=self._region)
+                self._logs_client = boto3.client('logs', region_name=self._region)
             if json_logging:
                 log_helper.setup(log_level, boto_level=boto_level, RequestType='ContainerInit')
             else:
@@ -73,8 +70,7 @@ class CfnResource(object):
         try:
             self._log_setup(event, context)
             logger.debug(event)
-            if not self._crhelper_init(event, context):
-                return
+            self._crhelper_init(event, context)
             # Check for polling functions
             if self._poll_enabled() and self._sam_local:
                 logger.info("Skipping poller functionality, as this is a local invocation")
@@ -97,12 +93,9 @@ class CfnResource(object):
                 self._timer.cancel()
 
     def _wait_for_cwlogs(self, sleep=sleep):
-        time_left = int(self._context.get_remaining_time_in_millis() / 1000) - 15
-        sleep_time = 0
-
-        if time_left > self._sleep_on_delete:
-            sleep_time = self._sleep_on_delete
-
+        sleep_time = int(self._context.get_remaining_time_in_millis() / 1000) - 15
+        if sleep_time > 120:
+            sleep_time = 120
         if sleep_time > 1:
             sleep(sleep_time)
 
@@ -132,11 +125,9 @@ class CfnResource(object):
         if self._timer:
             self._timer.cancel()
         if self._init_failed:
-            self._send(FAILED, str(self._init_failed))
-            return False
+            return self._send(FAILED, str(self._init_failed))
         self._set_timeout()
         self._wrap_function(self._get_func())
-        return True
 
     def _polling_init(self, event):
         # Setup polling on initial request
@@ -154,13 +145,6 @@ class CfnResource(object):
             self._remove_polling()
             self._send_response = True
 
-    def generate_physical_id(self, event):
-        return '_'.join([
-            event['StackId'].split('/')[1],
-            event['LogicalResourceId'],
-            self._rand_string(8)
-        ])
-
     def _cfn_response(self, event):
         # Use existing PhysicalResourceId if it's in the event and no ID was set
         if not self.PhysicalResourceId and "PhysicalResourceId" in event.keys():
@@ -168,8 +152,11 @@ class CfnResource(object):
             self.PhysicalResourceId = event['PhysicalResourceId']
         # Generate a physical id if none is provided
         elif not self.PhysicalResourceId or self.PhysicalResourceId is True:
+            if "PhysicalResourceId" in event.keys():
+                logger.info("PhysicalResourceId present in event, Using that for response")
             logger.info("No physical resource id returned, generating one...")
-            self.PhysicalResourceId = self.generate_physical_id(event)
+            self.PhysicalResourceId = event['StackId'].split('/')[1] + '_' + event[
+                'LogicalResourceId'] + '_' + self._rand_string(8)
         self._send()
 
     def _poll_enabled(self):
@@ -235,11 +222,10 @@ class CfnResource(object):
             'LogicalResourceId': self.LogicalResourceId,
             'Reason': str(self.Reason),
             'Data': self.Data,
-            'NoEcho': self.NoEcho,
         }
         if status:
             response_body.update({'Status': status, 'Reason': reason})
-        send_response(self._response_url, response_body, self._ssl_verify)
+        send_response(self._response_url, response_body)
 
     def init_failure(self, error):
         self._init_failed = error

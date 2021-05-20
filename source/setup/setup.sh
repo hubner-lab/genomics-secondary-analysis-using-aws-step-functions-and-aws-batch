@@ -74,9 +74,30 @@ PROJECT_NAME_LOWER_CASE=`echo "$PROJECT_NAME" | awk '{print tolower($0)}'`
 STACKNAME_ZONE=${PROJECT_NAME}Zone
 STACKNAME_PIPE=${PROJECT_NAME}Pipe
 STACKNAME_CODE=${PROJECT_NAME}Code
+STACKNAME_LAMBDA=${PROJECT_NAME}Lambda
+
+
+##------------------------
+#cd $BASEDIR/lambdas
+
+#aws cloudformation \
+  #create-stack \
+  #--stack-name $STACKNAME_LAMBDA \
+  #--template-body file://main.cfn.yml \
+  #--parameters \
+      #ParameterKey=Project,ParameterValue=${PROJECT_NAME} \
+  #--capabilities CAPABILITY_IAM \
+  #--enable-termination-protection \
+  #--output text
+
+
+#aws cloudformation \
+  #wait stack-create-complete \
+  #--stack-name $STACKNAME_ZONE
+
+##------------------------
 
 # Create Stack for GenomicsWorkflowZone
-
 cd $BASEDIR/zone
 
 aws cloudformation \
@@ -86,6 +107,8 @@ aws cloudformation \
   --parameters \
       ParameterKey=Project,ParameterValue=${PROJECT_NAME} \
       ParameterKey=ProjectLowerCase,ParameterValue=${PROJECT_NAME_LOWER_CASE} \
+      ParameterKey=InputBucket,ParameterValue=${INPUT_BUCKET} \
+      ParameterKey=WorkflowBucket,ParameterValue=${WORKFLOW_BUCKET} \
   --capabilities CAPABILITY_IAM \
   --enable-termination-protection \
   --output text
@@ -99,8 +122,8 @@ echo ${ZONE_BUCKET}
 
 
 # Copy sample data into the zone bucket
-aws s3 cp s3://$ARTIFACT_BUCKET/$ARTIFACT_KEY_PREFIX/samples/NIST7035_R1_trim_samp-0p1.fastq.gz s3://$ZONE_BUCKET/samples/NIST7035_R1_trim_samp-0p1.fastq.gz
-aws s3 cp s3://$ARTIFACT_BUCKET/$ARTIFACT_KEY_PREFIX/samples/NIST7035_R2_trim_samp-0p1.fastq.gz s3://$ZONE_BUCKET/samples/NIST7035_R2_trim_samp-0p1.fastq.gz
+#aws s3 cp s3://$ARTIFACT_BUCKET/$ARTIFACT_KEY_PREFIX/samples/NIST7035_R1_trim_samp-0p1.fastq.gz s3://$ZONE_BUCKET/samples/NIST7035_R1_trim_samp-0p1.fastq.gz
+#aws s3 cp s3://$ARTIFACT_BUCKET/$ARTIFACT_KEY_PREFIX/samples/NIST7035_R2_trim_samp-0p1.fastq.gz s3://$ZONE_BUCKET/samples/NIST7035_R2_trim_samp-0p1.fastq.gz
 
 
 git config --global credential.helper '!aws codecommit credential-helper $@'
@@ -136,7 +159,7 @@ git commit -m "first commit"
 git remote add origin $(get-repo-url $STACKNAME_PIPE)
 git push -u origin master
 
-wait-for-stack $STACKNAME_CODE
+wait-for-stack $STACKNAME_CODE 20 
 status=$?
 set -e
 if [ ! "$status" -eq 0 ]; then

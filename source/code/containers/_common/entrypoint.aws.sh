@@ -56,12 +56,20 @@ fi
 
 DEFAULT_AWS_CLI_PATH=/opt/miniconda/bin
 AWS_CLI_PATH=${JOB_AWS_CLI_PATH:-$DEFAULT_AWS_CLI_PATH}
+JOB_DATA_ISOLATION=${JOB_DATA_ISOLATION:-1}
 PATH=$PATH:$AWS_CLI_PATH
+
+aws configure set default.s3.max_concurrent_requests $(lscpu -p | egrep -v '^#' | wc -l) 
 
 # ensure that JOB_INPUT_PREFIX is fully evaluated if present
 if [[ $JOB_INPUT_PREFIX ]]; then
     JOB_INPUT_PREFIX=`echo $JOB_INPUT_PREFIX | envsubst`
 fi
+
+if [[ $JOB_OUTPUT_PREFIX ]]; then
+    JOB_OUTPUT_PREFIX=`echo $JOB_OUTPUT_PREFIX | envsubst`
+fi
+
 # # meta-variable that isn't passed in to the container as an environment variable
 # # but may be referenced in JOB_INPUTS
 # JOB_INPUT_PREFIX=$JOB_OUTPUT_PREFIX
@@ -134,9 +142,9 @@ function stage_out() (
                 local item_key=`basename $item`
                 local output_prefix=$JOB_OUTPUT_PREFIX
 
-                if [[ $JOB_WORKFLOW_NAME && $JOB_WORKFLOW_EXECUTION_ID ]]; then
-                    local output_prefix=$output_prefix/$JOB_WORKFLOW_NAME/$JOB_WORKFLOW_EXECUTION_ID
-                fi
+                #if [[ $JOB_WORKFLOW_NAME && $JOB_WORKFLOW_EXECUTION_ID ]]; then
+                    #local output_prefix=$output_prefix/$JOB_WORKFLOW_NAME/$JOB_WORKFLOW_EXECUTION_ID
+                #fi
 
                 echo "[output] remote: ./$item ==> $output_prefix/${item_key}"
 
@@ -160,14 +168,14 @@ function stage_out() (
 #
 # Note that AWS Batch has an implicit 8kb limit on the amount of data allowed in
 # container overrides, which includes environment variable data.
+
 COMMAND=`echo "$*" | envsubst`
 
 printenv
+
 stage_in $JOB_INPUTS
 
 echo "[command]: $COMMAND"
 bash -c "$COMMAND"
 
-
 stage_out $JOB_OUTPUTS
-

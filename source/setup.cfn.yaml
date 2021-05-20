@@ -28,6 +28,17 @@ Parameters:
       Project name should be 3-24 characters in length, and only have alphanumeric characters and hyphens ([a-zA-Z0-9-]{3,32})
     Default: GenomicsWorkflow
   
+  InputBucket:
+    Type: String
+
+  WorkflowBucket:
+    Type: String
+    #AllowedPattern: "[a-zA-Z0-9-]{3,24}"
+    #ConstraintDescription: >
+      #Project name should be 3-24 characters in length, and only have alphanumeric characters and hyphens ([a-zA-Z0-9-]{3,32})
+    #Default: 
+  
+  
   SmokeTest:
     Type: String
     AllowedValues:
@@ -69,10 +80,6 @@ Resources:
         rules_to_suppress:
           - id: W58
             reason: Bug in CfnNag.
-          - id: W89
-            reason: Just used to launch solution.
-          - id: W92
-            reason: Concurrent executions unnecessary.
 
   SetupLambdaRole:
     Type: AWS::IAM::Role
@@ -355,6 +362,20 @@ Resources:
                     - autoscaling:DescribeAutoScalingGroups
                   Resource: "*"
 
+          - PolicyName: LambdaAccess
+            PolicyDocument:
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:CreateFunction
+                    - lambda:DeleteFunction
+                    - lambda:GetFunction
+                    - lambda:UpdateFunctionCode
+                    - lambda:ListFunctions
+                  Resource:
+                    - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Project}*
+
+
       Metadata:
         cfn_nag:
           rules_to_suppress:
@@ -402,6 +423,11 @@ Resources:
                 - RunSmokeTest
                 - "1"
                 - ""
+          - Name: INPUT_BUCKET 
+            Value: !Ref InputBucket 
+          - Name: WORKFLOW_BUCKET 
+            Value: !Ref WorkflowBucket 
+
         Image: aws/codebuild/standard:3.0
         Type: LINUX_CONTAINER
       ServiceRole: !Sub ${CodeBuildRole}

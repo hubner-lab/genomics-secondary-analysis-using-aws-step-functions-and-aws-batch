@@ -35,6 +35,17 @@ Parameters:
     Description: Cloudformation StackName for project zone
     Type: String
 
+  #FSxLustreSourceFileSystem:
+    #Description: FSx file system Id 
+    #Type: String
+  #FSxLustreSourceDataFileSystem:
+    #Description: FSx file system Id 
+    #Type: String
+  FSxLustreWorkingFileSystem:
+    Description: FSx file system Id 
+    Type: String
+
+
 Mappings:
   solution:
     metadata:
@@ -57,15 +68,15 @@ Resources:
               # ecs optimized ami docker storage volume, kept for compatibility
               Encrypted: True
               DeleteOnTermination: True
-              VolumeSize: 22
+              VolumeSize: 220 # 22 is too small often fail
               VolumeType: gp2 
             DeviceName: /dev/xvdcz
           - Ebs:
               # docker storage volume (amazon-ebs-autoscale managed)
               Encrypted: True
               DeleteOnTermination: True
-              VolumeSize: 100
-              VolumeType: gp2 
+              VolumeSize: 300
+              VolumeType: gp3 
             DeviceName: /dev/sdc
         TagSpecifications:
           - ResourceType: volume
@@ -75,9 +86,18 @@ Resources:
               - Key: SolutionId
                 Value: !FindInMap ['solution', 'metadata', 'id']
         UserData:
-          Fn::Base64: |
+          Fn::Base64: !Sub |
             MIME-Version: 1.0
             Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+
+            --==BOUNDARY==
+            MIME-Version: 1.0 
+            Content-Type: text/x-shellscript; charset="us-ascii"
+
+            #!/bin/bash
+            echo "ECS_CLUSTER=default" > /etc/ecs/ecs.config
+            echo ECS_AVAILABLE_LOGGING_DRIVERS='["json-file","awslogs"]'>>/etc/ecs/ecs.config
+            echo ECS_IMAGE_CLEANUP_INTERVAL=10m >> /etc/ecs/ecs.config
 
             --==BOUNDARY==
             Content-Type: text/cloud-config; charset="us-ascii"
@@ -85,15 +105,21 @@ Resources:
             packages:
             - jq
             - btrfs-progs
+            - python27-pip
+            - sed
             - wget
             - git
             - bzip2
+            - amazon-ssm-agent
+            - awslogs
+            - lvm2
+            - unzip
+            - curl
+            - amazon-linux-extras
 
             runcmd:
-            - pip3 install -U awscli boto3
-
-            - systemctl stop ecs
-            - systemctl stop docker
+            - pip install -U awscli boto3
+            - start amazon-ssm-agent
 
             # install amazon-ebs-autoscale
             - cp -au /var/lib/docker /var/lib/docker.bk
@@ -101,20 +127,149 @@ Resources:
             - EBS_AUTOSCALE_VERSION=$(curl --silent "https://api.github.com/repos/awslabs/amazon-ebs-autoscale/releases/latest" | jq -r .tag_name)
             - cd /opt && git clone https://github.com/awslabs/amazon-ebs-autoscale.git
             - cd /opt/amazon-ebs-autoscale && git checkout $EBS_AUTOSCALE_VERSION
-            - sh /opt/amazon-ebs-autoscale/install.sh /var/lib/docker /dev/sdc 2>&1 > /var/log/ebs-autoscale-install.log
-            - sed -i 's+OPTIONS=.*+OPTIONS="--storage-driver btrfs"+g' /etc/sysconfig/docker-storage
+            - sh /opt/amazon-ebs-autoscale/install.sh -m /var/lib/docker -d /dev/sdc -f lvm.ext4 2>&1 > /var/log/ebs-autoscale-install.log
             - cp -au /var/lib/docker.bk/* /var/lib/docker
             
             # install miniconda/awscli
-            - wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
-            - bash Miniconda3-latest-Linux-x86_64.sh -b -f -p /opt/miniconda
-            - /opt/miniconda/bin/conda install -c conda-forge -y awscli
+            - mkdir -p /opt/miniconda/aws /opt/miniconda/bin
+            - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            - unzip awscliv2.zip 
+            - ./aws/install -i /opt/miniconda/aws -b /opt/miniconda/bin
             - chown -R ec2-user:ec2-user /opt/miniconda
-            - rm Miniconda3-latest-Linux-x86_64.sh
+            - rm awscliv2.zip
 
-            - trap "systemctl start docker;systemctl enable --now --no-block ecs" INT ERR EXIT
+              # mount FSx volume
+            - mkdir -p /scratch/source /scratch/data /scratch/working
 
-            --==BOUNDARY==--
+            - amazon-linux-extras install -y lustre2.10
+            - mount -t lustre ${FSxLustreWorkingFileSystem}.fsx.${AWS::Region}.amazonaws.com@tcp:/fsx /scratch/working
+            #- mount -t lustre ${!FSxLustreSourceFileSystem}.fsx.${AWS::Region}.amazonaws.com@tcp:/fsx /scratch/data # remove the !
+            #- mount -t lustre ${!FSxLustreSourceDataFileSystem}.fsx.${AWS::Region}.amazonaws.com@tcp:/fsx /scratch/source # remove the !
+            - chown -R ec2-user:ec2-user /scratch
+
+            --==BOUNDARY==
+            MIME-Version: 1.0 
+            Content-Type: text/x-shellscript; charset="us-ascii"
+            #!/bin/bash
+            TOKEN=`curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` 
+            INSTANCE_ID=`curl -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id`
+
+            cat > /etc/awslogs/awslogs.conf <<- EOF
+
+            [general]
+            state_file = /var/lib/awslogs/agent-state        
+
+            [/var/log/cloud-init-output.log]
+            file = /var/log/cloud-init-output.log
+            log_group_name =  /aws/batch/logs/cloud-init
+            log_stream_name = /logs/${!INSTANCE_ID}
+            datetime_format = %b %d %H:%M:%S
+    
+            [/var/log/ebs-autoscale-install.log]
+            file = /var/log/ebs-autoscale-install.log
+            log_group_name =  /aws/batch/logs/ebs-autoscale-install
+            log_stream_name = /logs/${!INSTANCE_ID}
+            datetime_format = %Y-%m-%dT%H:%M:%SZ
+    
+            [/var/log/ebs-autoscale.log]
+            file = /var/log/ebs-autoscale.log
+            log_group_name =  /aws/batch/logs/ebs-autoscale
+            log_stream_name = /logs/${!INSTANCE_ID}
+            datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+            [/var/log/docker]
+            file = /var/log/docker
+            log_group_name =  /aws/batch/logs/docker
+            log_stream_name = /logs/${!INSTANCE_ID}
+            datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+            EOF
+
+            --==BOUNDARY==
+            MIME-Version: 1.0 
+            Content-Type: text/x-shellscript; charset="us-ascii"
+            #!/bin/sh
+            
+            cat > /usr/local/bin/spot-termination <<- EOF
+            #!/bin/bash
+            FSXPATH="/fsx"
+            cd /
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            if [ "$?" -ne 0 ]; then
+                echo "Error running 'curl' command" >&2
+                exit 1
+            fi
+            # Periodically check for termination
+            while sleep 5
+            do
+
+                HTTP_CODE=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s -w %{http_code} -o /dev/null http://169.254.169.254/latest/meta-data/spot/instance-action)
+                if [[ "$HTTP_CODE" -eq 401 ]] ; then
+                    # Refreshing Authentication Token
+                    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")
+                elif [[ "$HTTP_CODE" -ne 200 ]] ; then
+                    # If the return code is not 200, the instance is not going to be interrupted
+                    continue
+                fi
+
+                echo "Instance is getting terminated. Clean and unmount '$FSXPATH' ..."
+                curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/spot/instance-action
+                echo
+
+                # Gracefully stop applications accessing the filesystem
+                #
+                # TODO*: Replace with the proper command to stop your application if possible*
+
+                # Kill every process still accessing Lustre filesystem
+                echo "Kill every process still accessing Lustre filesystem..."
+                fuser -kMm -TERM "${FSXPATH}"; sleep 2
+                fuser -kMm -KILL "${FSXPATH}"; sleep 2
+
+                # Unmount FSx For Lustre filesystem
+                if ! umount -c "${FSXPATH}"; then
+                   echo "Error unmouting '$FSXPATH'. Processes accessing it:" >&2
+                   lsof "${FSXPATH}"
+
+                   echo "Retrying..."
+                   continue
+                fi
+
+                # Start a graceful shutdown of the host
+                shutdown now
+            done
+
+            EOF
+
+            chmod +x /usr/local/bin/spot-termination
+
+            cat >  /etc/systemd/system/spot.service <<- EOF
+
+            [Unit]
+            Description=Spot Termination
+
+            [Service]
+            User=root
+            WorkingDirectory=/root
+            ExecStart=/usr/local/bin/spot-termination
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+                
+            EOF
+
+            --==BOUNDARY==
+            MIME-Version: 1.0 
+            Content-Type: text/x-shellscript; charset="us-ascii"
+            #!/bin/sh
+    
+            # Start logs
+            systemctl daemon-reload
+            systemctl enable awslogsd.service
+            systemctl start awslogsd.service --no-block
+            systemctl start ecs.service --no-block
+
+            --==BOUNDARY==
 
   SpotEnv:
     Type: AWS::Batch::ComputeEnvironment
@@ -131,10 +286,18 @@ Resources:
         BidPercentage: 50
         InstanceRole: !Ref BatchInstanceProfileArn
         InstanceTypes:
-          - optimal
+          - c5.large
+          - c5.xlarge
+          - c5.2xlarge
+          - c5.4xlarge
+          - c5.9xlarge
+          - c5.12xlarge
+          - c5.18xlarge
+          - c5.24xlarge
+
         MinvCpus: 0
         DesiredvCpus: 0
-        MaxvCpus: 256
+        MaxvCpus: 10000 
         SpotIamFleetRole: !Ref SpotFleetRoleArn
         Subnets: !Ref SubnetIds
         Tags:
@@ -157,10 +320,26 @@ Resources:
         SecurityGroupIds: !Ref SecurityGroupIds
         InstanceRole: !Ref BatchInstanceProfileArn
         InstanceTypes:
-          - optimal
+          - c5.large
+          - c5.xlarge
+          - c5.2xlarge
+          - c5.4xlarge
+          - c5.9xlarge
+          - c5.12xlarge
+          - c5.18xlarge
+          - c5.24xlarge
+          - r5.large
+          - r5.xlarge
+          - r5.2xlarge
+          - r5.4xlarge
+          - r5.8xlarge
+          - r5.12xlarge
+          - r5.16xlarge
+          - r5.24xlarge
+
         MinvCpus: 0
         DesiredvCpus: 0
-        MaxvCpus: 256
+        MaxvCpus: 20000 
         Subnets: !Ref SubnetIds
         Tags:
           Name: !Sub ${Project}OnDemandEnv-Worker

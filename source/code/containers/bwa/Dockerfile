@@ -19,7 +19,7 @@ RUN wget https://github.com/lh3/bwa/releases/download/v${VERSION}/bwa-${VERSION}
  && cp bwa /opt/src
 
 
-FROM public.ecr.aws/ubuntu/ubuntu:18.04 AS final
+FROM public.ecr.aws/ubuntu/ubuntu:18.04 AS final 
 
 RUN apt-get update -y \
  && apt-get install -y \

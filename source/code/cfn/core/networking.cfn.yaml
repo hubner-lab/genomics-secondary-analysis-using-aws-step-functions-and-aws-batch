@@ -211,6 +211,10 @@ Outputs:
     Value: !Sub "${SubnetPublic1}"
   PrivateSubnetIds:
     Value: !Sub "${SubnetPrivate1}, ${SubnetPrivate2}"
+  PrivateSubnet1Id:
+    Value: !Sub "${SubnetPrivate1}"
+  PrivateSubnet2Id:
+    Value: !Sub "${SubnetPrivate2}"
   SecurityGroupIds:
     Value: !Sub ${SecurityGroup}
 ...

@@ -12,7 +12,7 @@ Parameters:
   ProjectLowerCase:
     Type: String
     Default: genomicsworkflow
-  
+
   ZoneStackName:
     Type: String
     Default: GenomicsWorkflowZone
@@ -136,6 +136,28 @@ Resources:
                     Fn::ImportValue:
                       !Sub ${ZoneStackName}-ZoneBucket
 
+  StackBuildContainerSamtoolsIndex:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref ProjectLowerCase
+        ImageName: samtools-index
+        ImageTag: "0.1.19"
+        BuildSpec: ./containers/buildspec.yml
+        ProjectPath: ./containers/samtools2
+        CodeBuildRoleArn: !GetAtt IamRoles.Outputs.CodeBuildRoleArn
+        UseProjectPrefix: "yes"
+      TemplateURL:
+        Fn::Sub:
+          - ${TemplateRootUrl}/container-buildproject.cfn.yaml
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/zone"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
+
   StackBuildContainerBcftools:
     Type: "AWS::CloudFormation::Stack"
     Properties:
@@ -156,6 +178,91 @@ Resources:
                 - ZoneBucket:
                     Fn::ImportValue:
                       !Sub ${ZoneStackName}-ZoneBucket
+
+  StackBuildContainerGatk:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref ProjectLowerCase
+        ImageName: gatk 
+        ImageTag: "4.1.9.0"
+        BuildSpec: ./containers/buildspec.yml
+        ProjectPath: ./containers/gatk2
+        CodeBuildRoleArn: !GetAtt IamRoles.Outputs.CodeBuildRoleArn
+        UseProjectPrefix: "yes"
+      TemplateURL:
+        Fn::Sub:
+          - ${TemplateRootUrl}/container-buildproject.cfn.yaml
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/zone"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
+  StackBuildContainerFastp:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref ProjectLowerCase
+        ImageName: fastp 
+        ImageTag: "0.20.0"
+        BuildSpec: ./containers/buildspec.yml
+        ProjectPath: ./containers/fastp
+        CodeBuildRoleArn: !GetAtt IamRoles.Outputs.CodeBuildRoleArn
+        UseProjectPrefix: "yes"
+      TemplateURL:
+        Fn::Sub:
+          - ${TemplateRootUrl}/container-buildproject.cfn.yaml
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/zone"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
+  StackBuildContainerConcat:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref ProjectLowerCase
+        ImageName: concat 
+        ImageTag: "1.0"
+        BuildSpec: ./containers/buildspec.yml
+        ProjectPath: ./containers/concat
+        CodeBuildRoleArn: !GetAtt IamRoles.Outputs.CodeBuildRoleArn
+        UseProjectPrefix: "yes"
+      TemplateURL:
+        Fn::Sub:
+          - ${TemplateRootUrl}/container-buildproject.cfn.yaml
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/zone"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
+  StackBuildContainerBwaMem2:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      Parameters:
+        Project: !Ref ProjectLowerCase
+        ImageName: bwa-mem2 
+        ImageTag: "1.9"
+        BuildSpec: ./containers/buildspec.yml
+        ProjectPath: ./containers/bwa-mem2
+        CodeBuildRoleArn: !GetAtt IamRoles.Outputs.CodeBuildRoleArn
+        UseProjectPrefix: "yes"
+      TemplateURL:
+        Fn::Sub:
+          - ${TemplateRootUrl}/container-buildproject.cfn.yaml
+          - TemplateRootUrl:
+              Fn::Sub:
+                - "https://${ZoneBucket}.s3.${AWS::Region}.amazonaws.com/zone"
+                - ZoneBucket:
+                    Fn::ImportValue:
+                      !Sub ${ZoneStackName}-ZoneBucket
+
 
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -196,6 +303,7 @@ Resources:
                 ProjectName: !Ref BuildCode
               InputArtifacts:
                 - Name: SourceStageOutput
+
             - Name: Bwa
               ActionTypeId:
                 Category: Build
@@ -206,6 +314,7 @@ Resources:
                 ProjectName: !GetAtt "StackBuildContainerBwa.Outputs.Name"
               InputArtifacts:
               - Name: SourceStageOutput
+
             - Name: Samtools
               ActionTypeId:
                 Category: Build
@@ -216,6 +325,7 @@ Resources:
                 ProjectName: !GetAtt "StackBuildContainerSamtools.Outputs.Name"
               InputArtifacts:
               - Name: SourceStageOutput
+
             - Name: Bcftools
               ActionTypeId:
                 Category: Build
@@ -226,6 +336,64 @@ Resources:
                 ProjectName: !GetAtt "StackBuildContainerBcftools.Outputs.Name"
               InputArtifacts:
               - Name: SourceStageOutput
+
+            - Name: Gatk 
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !GetAtt "StackBuildContainerGatk.Outputs.Name"
+              InputArtifacts:
+              - Name: SourceStageOutput
+
+            - Name: Fastp 
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !GetAtt "StackBuildContainerFastp.Outputs.Name"
+              InputArtifacts:
+              - Name: SourceStageOutput
+
+            - Name: Concat 
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !GetAtt "StackBuildContainerConcat.Outputs.Name"
+              InputArtifacts:
+              - Name: SourceStageOutput
+
+            - Name: SamtoolsIndex 
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !GetAtt "StackBuildContainerSamtoolsIndex.Outputs.Name"
+              InputArtifacts:
+              - Name: SourceStageOutput
+
+            - Name: BwaMem2 
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !GetAtt "StackBuildContainerBwaMem2.Outputs.Name"
+              InputArtifacts:
+              - Name: SourceStageOutput
+
+
+
         - Name: CreateStack
           Actions:
             - Name: CreateStack

@@ -1,27 +1,36 @@
 ---
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  Simple FASTQ to VCF variant calling workflow based on BWA-MEM, samtools, and bcftools
+  Simple workflow 
 
 Parameters:
-
-  InputDataPrefix:
-    Type: String
-  
-  OutputDataPrefix:
-    Type: String
-
   BatchJobDefinitionBwa:
     Type: String
   BatchJobDefinitionSamtools:
     Type: String
   BatchJobDefinitionBcftools:
     Type: String
-  
+  BatchJobDefinitionConcat:
+    Type: String
+  BatchJobDefinitionGatk:
+    Type: String
+  BatchJobDefinitionFastp:
+    Type: String
+  BatchJobDefinitionSamtoolsIndex:
+    Type: String
+  BatchJobDefinitionBwaMem2:
+    Type: String
   BatchJobQueue:
     Type: String
-  
+
   StatesExecutionRoleArn:
+    Type: String
+
+  SplitLambdaArn:
+    Type: String
+  SubmitStateMachineArn:
+    Type: String
+  MapStateMachineArn:
     Type: String
 
 Resources:
@@ -32,195 +41,595 @@ Resources:
       RoleArn: !Ref StatesExecutionRoleArn #required
       DefinitionString: !Sub |-
         {
-            "Comment": "Simple Genomics Workflow with mapping",
-            "StartAt": "Initialize",
-            "States": {
-                "Initialize": {
-                    "Type": "Pass",
+          "Comment": "Simple Genomics Workflow",
+          "StartAt": "Initialize",
+          "States": {
+            "Initialize": {
+              "Type": "Pass",
+              "InputPath": "$",
+              "Parameters": {
+                "workflow": {
+                  "name.$": "$$.StateMachine.Name",
+                  "execution.$": "$$.Execution.Name"
+                },
+                "params.$": "$.params",
+                "jobdefs": {
+                  "fastp": "${BatchJobDefinitionFastp}",
+                  "bwa": "${BatchJobDefinitionBwa}",
+                  "samtools": "${BatchJobDefinitionSamtools}",
+                  "samtoolsindex": "${BatchJobDefinitionSamtoolsIndex}",
+                  "gatk": "${BatchJobDefinitionGatk}",
+                  "bwamem2": "${BatchJobDefinitionBwaMem2}"
+                }
+              },
+              "Next": "All"
+            },
+            "All": {
+              "Type": "Map",
+              "InputPath": "$",
+              "ItemsPath": "$.params.samples",
+              "MaxConcurrency": 0,
+              "ResultPath": null,
+              "Parameters": {
+                "workflow.$": "$.workflow",
+                "params.$": "$.params",
+                "jobdefs.$": "$.jobdefs",
+                "sample.$": "$$.Map.Item.Value"
+              },
+              "Iterator": {
+                "StartAt": "Trim",
+                "States": {
+                  "Trim": {
+                    "Type": "Task",
                     "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
                     "Parameters": {
-                        "workflow": {
-                            "name.$": "$$.StateMachine.Name",
-                            "execution.$": "$$.Execution.Name" 
+                      "Input": {
+                        "JobName": "trim",
+                        "JobDefinition.$": "$.jobdefs.fastp",
+                        "JobQueue.$": "$.params.queue",
+                        "RetryStrategy": {
+                          "Attempts": 1
                         },
-                        "params.$": "$.params",
-                        "jobdefs": {
-                            "bwa": "${BatchJobDefinitionBwa}",
-                            "samtools": "${BatchJobDefinitionSamtools}",
-                            "bcftools": "${BatchJobDefinitionBcftools}"
-                        }
-                    },
-                    "Next": "BwaMem"
-                },
-                "BwaMem": {
-                    "Type": "Task",
-                    "InputPath": "$",
-                    "ResultPath": "$.result",
-                    "Resource": "arn:aws:states:::batch:submitJob.sync",
-                    "Parameters": {
-                        "JobName": "bwa-mem",
-                        "JobDefinition.$": "$.jobdefs.bwa",
-                        "JobQueue.$": "$.params.queue",
                         "ContainerOverrides": {
-                            "Vcpus": 8,
-                            "Memory": 8000,
-                            "Environment": [
-                                {"Name": "JOB_WORKFLOW_NAME", "Value.$": "$.workflow.name"},
-                                {"Name": "JOB_WORKFLOW_EXECUTION_ID", "Value.$": "$.workflow.execution"},
-                                {"Name": "JOB_INPUTS", "Value": "s3://broad-references/hg38/v0/Homo_sapiens_assembly38.fasta* ${!SOURCE_DATA_PREFIX}/${!SAMPLE_ID}*"},
-                                {"Name": "JOB_OUTPUTS", "Value": "*.sam"},
-                                {"Name": "JOB_OUTPUT_PREFIX", "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"},
-                                {"Name": "JOB_AWS_CLI_PATH", "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"},
-                                {"Name": "SOURCE_DATA_PREFIX", "Value.$": "$.params.environment.SOURCE_DATA_PREFIX"},
-                                {"Name": "SAMPLE_ID", "Value.$": "$.params.environment.SAMPLE_ID"},
-                                {"Name": "REFERENCE_NAME", "Value.$": "$.params.environment.REFERENCE_NAME"}
-                            ],
-                            "Command": [
-                                "bwa mem -t 8 -p -o ${!SAMPLE_ID}.sam ${!REFERENCE_NAME}.fasta ${!SAMPLE_ID}_*1*.fastq.gz"
-                            ]
-                        }
-                    },
-                    "Next": "SamtoolsSort"
-                },
-                "SamtoolsSort": {
-                    "Type": "Task",
-                    "InputPath": "$",
-                    "ResultPath": "$.result",
-                    "Resource": "arn:aws:states:::batch:submitJob.sync",
-                    "Parameters": {
-                        "JobName": "samtools-sort",
-                        "JobDefinition.$": "$.jobdefs.samtools",
-                        "JobQueue.$": "$.params.queue",
-                        "ContainerOverrides": {
-                            "Vcpus": 4,
-                            "Memory": 8000,
-                            "Environment": [
-                                {"Name": "JOB_WORKFLOW_NAME", "Value.$": "$.workflow.name"},
-                                {"Name": "JOB_WORKFLOW_EXECUTION_ID", "Value.$": "$.workflow.execution"},
-                                {"Name": "JOB_INPUT_PREFIX", "Value": "${!JOB_OUTPUT_PREFIX}/${!JOB_WORKFLOW_NAME}/${!JOB_WORKFLOW_EXECUTION_ID}"},
-                                {"Name": "JOB_INPUTS", "Value": "${!JOB_INPUT_PREFIX}/*.sam"},
-                                {"Name": "JOB_OUTPUTS", "Value": "*.bam"},
-                                {"Name": "JOB_OUTPUT_PREFIX", "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"},
-                                {"Name": "JOB_AWS_CLI_PATH", "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"},
-                                {"Name": "SAMPLE_ID", "Value.$": "$.params.environment.SAMPLE_ID"}
-                            ],
-                            "Command": [
-                                "samtools sort -@ 4 -o ${!SAMPLE_ID}.bam ${!SAMPLE_ID}.sam"
-                            ]
-                        }
-                    },
-                    "Next": "SamtoolsIndex"
-                },
-                "SamtoolsIndex": {
-                    "Type": "Task",
-                    "InputPath": "$",
-                    "ResultPath": "$.result",
-                    "Resource": "arn:aws:states:::batch:submitJob.sync",
-                    "Parameters": {
-                        "JobName": "samtools-index",
-                        "JobDefinition.$": "$.jobdefs.samtools",
-                        "JobQueue.$": "$.params.queue",
-                        "ContainerOverrides": {
-                            "Vcpus": 1,
-                            "Memory": 1024,
-                            "Environment": [
-                                {"Name": "JOB_WORKFLOW_NAME", "Value.$": "$.workflow.name"},
-                                {"Name": "JOB_WORKFLOW_EXECUTION_ID", "Value.$": "$.workflow.execution"},
-                                {"Name": "JOB_INPUT_PREFIX", "Value": "${!JOB_OUTPUT_PREFIX}/${!JOB_WORKFLOW_NAME}/${!JOB_WORKFLOW_EXECUTION_ID}"},
-                                {"Name": "JOB_INPUTS", "Value": "${!JOB_INPUT_PREFIX}/*.bam"},
-                                {"Name": "JOB_OUTPUTS", "Value": "*.bam*"},
-                                {"Name": "JOB_OUTPUT_PREFIX", "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"},
-                                {"Name": "JOB_AWS_CLI_PATH", "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"},
-                                {"Name": "SAMPLE_ID", "Value.$": "$.params.environment.SAMPLE_ID"}
-                            ],
-                            "Command": [
-                                "samtools index ${!SAMPLE_ID}.bam"
-                            ]
-                        }
-                    },
-                    "Next": "CallVariantsByChromosome"
-                },
-                "CallVariantsByChromosome" : {
-                    "Type": "Map",
-                    "InputPath": "$",
-                    "ItemsPath": "$.params.chromosomes",
-                    "MaxConcurrency": 23,
-                    "ResultPath": "$.results.variant_calls",
-                    "Parameters": {
-                        "workflow.$": "$.workflow",
-                        "params.$": "$.params",
-                        "chromosome.$": "$$.Map.Item.Value",
-                        "jobdefs.$": "$.jobdefs"
-                    },
-                    "Iterator": {
-                        "StartAt": "BcftoolsMPileup",
-                        "States": {
-                            "BcftoolsMPileup": {
-                                "Type": "Task",
-                                "InputPath": "$",
-                                "ResultPath": "$.result",
-                                "Resource": "arn:aws:states:::batch:submitJob.sync",
-                                "Parameters": {
-                                    "JobName": "bcftools-mpileup",
-                                    "JobDefinition.$": "$.jobdefs.bcftools",
-                                    "JobQueue.$": "$.params.queue",
-                                    "ContainerOverrides": {
-                                        "Vcpus": 4,
-                                        "Memory": 4096,
-                                        "Environment": [
-                                            {"Name": "JOB_WORKFLOW_NAME", "Value.$": "$.workflow.name"},
-                                            {"Name": "JOB_WORKFLOW_EXECUTION_ID", "Value.$": "$.workflow.execution"},
-                                            {"Name": "JOB_INPUT_PREFIX", "Value": "${!JOB_OUTPUT_PREFIX}/${!JOB_WORKFLOW_NAME}/${!JOB_WORKFLOW_EXECUTION_ID}"},
-                                            {"Name": "JOB_INPUTS", "Value": "s3://broad-references/hg38/v0/Homo_sapiens_assembly38.fasta* ${!JOB_INPUT_PREFIX}/*.bam*"},
-                                            {"Name": "JOB_OUTPUTS", "Value": "*.mpileup.gz"},
-                                            {"Name": "JOB_OUTPUT_PREFIX", "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"},
-                                            {"Name": "JOB_AWS_CLI_PATH", "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"},
-                                            {"Name": "SAMPLE_ID", "Value.$": "$.params.environment.SAMPLE_ID"},
-                                            {"Name": "REFERENCE_NAME", "Value.$": "$.params.environment.REFERENCE_NAME"},
-                                            {"Name": "CHROMOSOME", "Value.$": "$.chromosome"}
-                                        ],
-                                        "Command": [
-                                            "bcftools mpileup --threads 4 -r ${!CHROMOSOME} -Oz -f ${!REFERENCE_NAME}.fasta -o ${!SAMPLE_ID}.${!CHROMOSOME}.mpileup.gz ${!SAMPLE_ID}.bam"
-                                        ]
-                                    }
-                                },
-                                "Next": "BcftoolsCall"
+                          "Vcpus": 16,
+                          "Memory": 32000,
+                          "Environment": [
+                            {
+                              "Name": "JOB_WORKFLOW_NAME",
+                              "Value.$": "$.workflow.name"
                             },
-                            "BcftoolsCall": {
-                                "Type": "Task",
-                                "InputPath": "$",
-                                "ResultPath": "$.result",
-                                "Resource": "arn:aws:states:::batch:submitJob.sync",
-                                "Parameters": {
-                                    "JobName": "bcftools-call",
-                                    "JobDefinition.$": "$.jobdefs.bcftools",
-                                    "JobQueue.$": "$.params.queue",
-                                    "ContainerOverrides": {
-                                        "Vcpus": 2,
-                                        "Memory": 1024,
-                                        "Environment": [
-                                            {"Name": "JOB_WORKFLOW_NAME", "Value.$": "$.workflow.name"},
-                                            {"Name": "JOB_WORKFLOW_EXECUTION_ID", "Value.$": "$.workflow.execution"},
-                                            {"Name": "JOB_INPUT_PREFIX", "Value": "${!JOB_OUTPUT_PREFIX}/${!JOB_WORKFLOW_NAME}/${!JOB_WORKFLOW_EXECUTION_ID}"},
-                                            {"Name": "JOB_INPUTS", "Value": "${!JOB_INPUT_PREFIX}/*.${!CHROMOSOME}.mpileup.gz"},
-                                            {"Name": "JOB_OUTPUTS", "Value": "*.vcf.gz"},
-                                            {"Name": "JOB_OUTPUT_PREFIX", "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"},
-                                            {"Name": "JOB_AWS_CLI_PATH", "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"},
-                                            {"Name": "SAMPLE_ID", "Value.$": "$.params.environment.SAMPLE_ID"},
-                                            {"Name": "CHROMOSOME", "Value.$": "$.chromosome"}
-                                        ],
-                                        "Command": [
-                                            "bcftools call -m --threads 2 -t ${!CHROMOSOME} -Oz -o ${!SAMPLE_ID}.${!CHROMOSOME}.vcf.gz ${!SAMPLE_ID}.${!CHROMOSOME}.mpileup.gz"
-                                        ]
-                                    }
-                                },
-                                "End": true
+                            {
+                              "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                              "Value.$": "$.workflow.execution"
+                            },
+                            {
+                              "Name": "JOB_INPUTS",
+                              "Value": "${!SOURCE_DATA_PREFIX}/samples/${!SAMPLE_ID}*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUTS",
+                              "Value": "trimmed/*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX_ENV",
+                              "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/trimmed"
+                            },
+                            {
+                              "Name": "SOURCE_DATA_PREFIX",
+                              "Value.$": "$.params.environment.SOURCE_DATA_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_AWS_CLI_PATH",
+                              "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                            },
+                            {
+                              "Name": "SAMPLE_ID",
+                              "Value.$": "$.sample"
                             }
+                          ],
+                          "Command": [
+                            "mkdir -p trimmed && fastp --thread 16 --detect_adapter_for_pe --overrepresentation_analysis --correction -i ${!SAMPLE_ID}_R1.fastq.gz -I ${!SAMPLE_ID}_R2.fastq.gz -o trimmed/${!SAMPLE_ID}_R1.fastq.gz -O trimmed/${!SAMPLE_ID}_R2.fastq.gz --json /dev/null --html /dev/null"
+                          ]
+                        },
+                        "Outputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.trim.outputs",
+                          "sample.$": "$.sample"
+                        },
+                        "Inputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.trim.inputs",
+                          "sample.$": "$.sample"
                         }
+                      },
+                      "StateMachineArn": "${SubmitStateMachineArn}"
+                    },
+                    "Next": "Map"
+                  },
+                  "Map": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "JobName": "map",
+                        "JobDefinition.$": "$.jobdefs.bwamem2",
+                        "JobQueue.$": "$.params.queue",
+                        "RetryStrategy": {
+                          "Attempts": 1
+                        },
+                        "ContainerOverrides": {
+                          "Vcpus": 92,
+                          "Memory": 700000,
+                          "Environment": [
+                            {
+                              "Name": "JOB_WORKFLOW_NAME",
+                              "Value.$": "$.workflow.name"
+                            },
+                            {
+                              "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                              "Value.$": "$.workflow.execution"
+                            },
+                            {
+                              "Name": "SOURCE_DATA_PREFIX",
+                              "Value.$": "$.params.environment.SOURCE_DATA_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_INPUTS",
+                              "Value": "${!SOURCE_DATA_PREFIX}/REF/${!REFERENCE_NAME}.* ${!JOB_OUTPUT_PREFIX_ENV}/trimmed/${!SAMPLE_ID}*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUTS",
+                              "Value": "output/*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX_ENV",
+                              "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/bam"
+                            },
+                            {
+                              "Name": "JOB_AWS_CLI_PATH",
+                              "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                            },
+                            {
+                              "Name": "REFERENCE_NAME",
+                              "Value.$": "$.params.environment.REFERENCE_NAME"
+                            },
+                            {
+                              "Name": "SAMPLE_ID",
+                              "Value.$": "$.sample"
+                            }
+                          ],
+                          "Command": [
+                            "mkdir -p output && bwa-mem2 index ${!REFERENCE_NAME}.fna && bwa-mem2 mem -t 92 -R \"@RG\\tID:ID\\tSM:ID_${!SAMPLE_ID}\\tLB:ID_${!SAMPLE_ID}\\tPL:ILLUMINA\" ${!REFERENCE_NAME}.fna ${!SAMPLE_ID}_R1.fastq.gz ${!SAMPLE_ID}_R2.fastq.gz | samtools sort -@ 92 --reference ${!REFERENCE_NAME}.fna -o output/${!SAMPLE_ID}.bam"
+                          ]
+                        },
+                        "Outputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.map.outputs",
+                          "sample.$": "$.sample"
+                        },
+                        "Inputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.map.inputs",
+                          "sample.$": "$.sample"
+                        }
+                      },
+                      "StateMachineArn": "${SubmitStateMachineArn}"
+                    },
+                    "Next": "Index"
+                  },
+                  "Index": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "JobName": "index",
+                        "JobDefinition.$": "$.jobdefs.samtoolsindex",
+                        "JobQueue.$": "$.params.queue",
+                        "RetryStrategy": {
+                          "Attempts": 1
+                        },
+                        "ContainerOverrides": {
+                          "Vcpus": 1,
+                          "Memory": 2000,
+                          "Environment": [
+                            {
+                              "Name": "JOB_WORKFLOW_NAME",
+                              "Value.$": "$.workflow.name"
+                            },
+                            {
+                              "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                              "Value.$": "$.workflow.execution"
+                            },
+                            {
+                              "Name": "JOB_INPUTS",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/bam/${!SAMPLE_ID}*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUTS",
+                              "Value": "*.bai"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX_ENV",
+                              "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/bam"
+                            },
+                            {
+                              "Name": "JOB_AWS_CLI_PATH",
+                              "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                            },
+                            {
+                              "Name": "SAMPLE_ID",
+                              "Value.$": "$.sample"
+                            }
+                          ],
+                          "Command": [
+                            "samtools index ${!SAMPLE_ID}.bam"
+                          ]
+                        },
+                        "Outputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.index.outputs",
+                          "sample.$": "$.sample"
+                        },
+                        "Inputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.index.inputs",
+                          "sample.$": "$.sample"
+                        }
+                      },
+                      "StateMachineArn": "${SubmitStateMachineArn}"
+                    },
+                    "Next": "MarkDup"
+                  },
+                  "MarkDup": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "JobName": "markdup",
+                        "JobDefinition.$": "$.jobdefs.gatk",
+                        "JobQueue.$": "$.params.queue",
+                        "RetryStrategy": {
+                          "Attempts": 1
+                        },
+                        "ContainerOverrides": {
+                          "Vcpus": 16,
+                          "Memory": 32000,
+                          "Environment": [
+                            {
+                              "Name": "JOB_WORKFLOW_NAME",
+                              "Value.$": "$.workflow.name"
+                            },
+                            {
+                              "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                              "Value.$": "$.workflow.execution"
+                            },
+                            {
+                              "Name": "JOB_INPUTS",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/bam/${!SAMPLE_ID}*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUTS",
+                              "Value": "output/*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX_ENV",
+                              "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/markdup"
+                            },
+                            {
+                              "Name": "JOB_AWS_CLI_PATH",
+                              "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                            },
+                            {
+                              "Name": "SAMPLE_ID",
+                              "Value.$": "$.sample"
+                            }
+                          ],
+                          "Command": [
+                            "mkdir -p output && gatk MarkDuplicates -I ${!SAMPLE_ID}.bam -O output/${!SAMPLE_ID}.MarkDup.bam -M output/${!SAMPLE_ID}.mark_dup_metrics.txt --VALIDATION_STRINGENCY LENIENT"
+                          ]
+                        },
+                        "Outputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.markdup.outputs",
+                          "sample.$": "$.sample"
+                        },
+                        "Inputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.markdup.inputs",
+                          "sample.$": "$.sample"
+                        }
+                      },
+                      "StateMachineArn": "${SubmitStateMachineArn}"
+                    },
+                    "Next": "IndexMarkDup"
+                  },
+                  "IndexMarkDup": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "JobName": "index",
+                        "JobDefinition.$": "$.jobdefs.samtoolsindex",
+                        "JobQueue.$": "$.params.queue",
+                        "RetryStrategy": {
+                          "Attempts": 1
+                        },
+                        "ContainerOverrides": {
+                          "Vcpus": 1,
+                          "Memory": 2000,
+                          "Environment": [
+                            {
+                              "Name": "JOB_WORKFLOW_NAME",
+                              "Value.$": "$.workflow.name"
+                            },
+                            {
+                              "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                              "Value.$": "$.workflow.execution"
+                            },
+                            {
+                              "Name": "JOB_INPUTS",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/markdup/${!SAMPLE_ID}*"
+                            },
+                            {
+                              "Name": "JOB_OUTPUTS",
+                              "Value": "*.bam.bai"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX_ENV",
+                              "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                            },
+                            {
+                              "Name": "JOB_OUTPUT_PREFIX",
+                              "Value": "${!JOB_OUTPUT_PREFIX_ENV}/markdup"
+                            },
+                            {
+                              "Name": "JOB_AWS_CLI_PATH",
+                              "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                            },
+                            {
+                              "Name": "SAMPLE_ID",
+                              "Value.$": "$.sample"
+                            }
+                          ],
+                          "Command": [
+                            "samtools index ${!SAMPLE_ID}.MarkDup.bam"
+                          ]
+                        },
+                        "Outputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.markdupindex.outputs",
+                          "sample.$": "$.sample"
+                        },
+                        "Inputs": {
+                          "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                          "Keys.$": "$.params.markdupindex.inputs",
+                          "sample.$": "$.sample"
+                        }
+                      },
+                      "StateMachineArn": "${SubmitStateMachineArn}"
                     },
                     "End": true
+                  }
                 }
+              },
+              "End": true
             }
+          }
+        }
+        
+  HCStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      StateMachineName: !Sub "HC${AWS::StackName}"
+      RoleArn: !Ref StatesExecutionRoleArn #required
+      DefinitionString: !Sub |-
+        {
+          "Comment": "HaplotypeCaller Workflow",
+          "StartAt": "Initialize",
+          "States": {
+            "Initialize": {
+              "Type": "Pass",
+              "InputPath": "$",
+              "Parameters": {
+                "workflow": {
+                  "name.$": "$$.StateMachine.Name",
+                  "execution.$": "$$.Execution.Name"
+                },
+                "params.$": "$.params",
+                "jobdefs": {
+                  "gatk": "${BatchJobDefinitionGatk}"
+                },
+                "sample.$": "$.result[0]",
+                "range.$": "$.result[1][0]",
+                "chrom.$": "$.data.chrom"
+              },
+              "Next": "HaplotypeCaller"
+            },
+            "HaplotypeCaller": {
+              "Type": "Task",
+              "InputPath": "$",
+              "ResultPath": null,
+              "Resource": "arn:aws:states:::states:startExecution",
+              "Parameters": {
+                "Input": {
+                  "JobName": "haplotypecaller",
+                  "JobDefinition.$": "$.jobdefs.gatk",
+                  "JobQueue.$": "$.params.queue2",
+                  "RetryStrategy": {
+                    "Attempts": 4
+                  },
+                  "ContainerOverrides": {
+                    "Vcpus": 1,
+                    "Memory": 2000,
+                    "Environment": [
+                      {
+                        "Name": "JOB_WORKFLOW_NAME",
+                        "Value.$": "$.workflow.name"
+                      },
+                      {
+                        "Name": "JOB_WORKFLOW_EXECUTION_ID",
+                        "Value.$": "$.workflow.execution"
+                      },
+                      {
+                        "Name": "SOURCE_DATA_PREFIX",
+                        "Value.$": "$.params.environment.SOURCE_DATA_PREFIX"
+                      },
+                      {
+                        "Name": "JOB_INPUTS",
+                        "Value": "${!SOURCE_DATA_PREFIX}/REF/${!REFERENCE_NAME}.*"
+                      },
+                      {
+                        "Name": "JOB_OUTPUTS",
+                        "Value": "output/*"
+                      },
+                      {
+                        "Name": "JOB_OUTPUT_PREFIX_ENV",
+                        "Value.$": "$.params.environment.JOB_OUTPUT_PREFIX"
+                      },
+                      {
+                        "Name": "JOB_OUTPUT_PREFIX",
+                        "Value": "${!JOB_OUTPUT_PREFIX_ENV}/HC/${!CHR}/${!RANGE}"
+                      },
+                      {
+                        "Name": "JOB_AWS_CLI_PATH",
+                        "Value.$": "$.params.environment.JOB_AWS_CLI_PATH"
+                      },
+                      {
+                        "Name": "REFERENCE_NAME",
+                        "Value.$": "$.params.environment.REFERENCE_NAME"
+                      },
+                      {
+                        "Name": "SAMPLE_ID",
+                        "Value.$": "$.sample"
+                      },
+                      {
+                        "Name": "RANGE",
+                        "Value.$": "$.range"
+                      },
+                      {
+                        "Name": "CHR",
+                        "Value.$": "$.chrom.name"
+                      }
+                    ],
+                    "Command": [
+                      "mkdir -p output && gatk HaplotypeCaller -R ${!REFERENCE_NAME}.fna -I /scratch/working/${!SAMPLE_ID}.MarkDup.bam -L \"${!CHR}:${!RANGE}\" -O output/${!SAMPLE_ID}.g.vcf -ERC GVCF"
+                    ]
+                  },
+                  "Outputs": {
+                    "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                    "Keys.$": "$.params.HC.outputs",
+                    "sample.$": "$.sample",
+                    "range.$": "$.range",
+                    "chrom.$": "$.chrom.name"
+                  },
+                  "Inputs": {
+                    "Bucket.$": "$.params.environment.JOB_OUTPUT",
+                    "Keys.$": "$.params.HC.inputs",
+                    "sample.$": "$.sample"
+                  }
+                },
+                "StateMachineArn": "${SubmitStateMachineArn}"
+              },
+              "End": true
+            }
+          }
+        }
+
+  SecondStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      StateMachineName: !Sub "Second${AWS::StackName}"
+      RoleArn: !Ref StatesExecutionRoleArn #required
+      DefinitionString: !Sub |-
+        {
+          "Comment": "Simple Genomics Workflow 2",
+          "StartAt": "Initialize",
+          "States": {
+            "Initialize": {
+              "Type": "Pass",
+              "InputPath": "$",
+              "Parameters": {
+                "workflow": {
+                  "name.$": "$$.StateMachine.Name",
+                  "execution.$": "$$.Execution.Name"
+                },
+                "params.$": "$.params",
+                "jobdefs": {
+                  "gatk": "${BatchJobDefinitionGatk}"
+                }
+              },
+              "Next": "SplitChr"
+            },
+            "SplitChr": {
+              "Type": "Map",
+              "InputPath": "$",
+              "ItemsPath": "$.params.chrom",
+              "MaxConcurrency": 0,
+              "ResultPath": null,
+              "Parameters": {
+                "workflow.$": "$.workflow",
+                "params.$": "$.params",
+                "jobdefs.$": "$.jobdefs",
+                "chrom.$": "$$.Map.Item.Value"
+              },
+              "Iterator": {
+                "StartAt": "Split",
+                "States": {
+                  "Split": {
+                    "Type": "Task",
+                    "InputPath": "$.chrom",
+                    "ResultPath": "$.ranges",
+                    "Resource": "${SplitLambdaArn}",
+                    "Next": "MapRanges"
+                  },
+                  "MapRanges": {
+                    "Type": "Task",
+                    "InputPath": "$",
+                    "ResultPath": null,
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                      "Input": {
+                        "data": {
+                          "chrom.$": "$.chrom.name"
+                        },
+                        "statemachine": "States.Array(${MapStateMachineArn},${HCStateMachine})",
+                        "items.$": "States.Array($.samples, $.ranges)"
+                      },
+                      "StateMachineArn": "${MapStateMachineArn}"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
         }
 
 Outputs:
@@ -230,23 +639,6 @@ Outputs:
   WorkflowName:
     Description: Workflow statemachine Name
     Value: !GetAtt StateMachine.Name
-  WorkflowInput:
-    Description: Example input for workflow statemachine
-    Value: !Sub |-
-      {
-          "params": {
-              "queue": "${BatchJobQueue}",
-              "environment": {
-                  "REFERENCE_NAME": "Homo_sapiens_assembly38",
-                  "SAMPLE_ID": "NIST7035",
-                  "SOURCE_DATA_PREFIX": "${InputDataPrefix}",
-                  "JOB_OUTPUT_PREFIX": "${OutputDataPrefix}",
-                  "JOB_AWS_CLI_PATH": "/opt/miniconda/bin"
-              },
-              "chromosomes": [
-                "chr20",
-                "chr21"
-              ]
-          }
-      }
 ...
+
+#${!JOB_OUTPUT_PREFIX_ENV}/markdup/${!SAMPLE_ID}.MarkDup.bam*

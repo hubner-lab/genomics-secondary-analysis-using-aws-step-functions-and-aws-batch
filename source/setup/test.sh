@@ -61,7 +61,7 @@ done
 # wait for compute to cool down
 # this needs to happen before the stack can be torn down
 echo "waiting for compute cool down"
-LOWPRIORITY_QUEUE_ARN=$(
+LOWPRIORITY_QUEUE_ARN=$(\
     aws cloudformation \
         list-stack-resources \
         --stack-name $STACKNAME_CODE \

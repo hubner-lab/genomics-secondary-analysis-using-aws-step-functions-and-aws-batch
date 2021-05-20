@@ -223,6 +223,64 @@ Resources:
                 Action:
                   - cloudwatch:ListDashboards
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:ListFunctions
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                Resource:
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Project}*
+
+              - Effect: Allow
+                Action:
+                  - fsx:CreateFileSystem
+                  - fsx:DeleteFileSystem
+                  - fsx:DescribeFileSystemAliases
+                  - fsx:AssociateFileGateway
+                Resource:
+                  - !Sub arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:file-system/*
+              - Effect: Allow
+                Action:
+                  - fsx:DescribeFileSystems
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "s3:List*"
+                  - "s3:Get*"
+                Resource:
+                  - Fn::Sub:
+                      - "arn:aws:s3:::${WORKFLOW_BUCKET}"
+                      - WORKFLOW_BUCKET:
+                          Fn::ImportValue:
+                            !Sub ${ZoneStackName}-WorkflowBucket
+                  - Fn::Sub:
+                      - "arn:aws:s3:::${WORKFLOW_BUCKET}/*"
+                      - WORKFLOW_BUCKET:
+                          Fn::ImportValue:
+                            !Sub ${ZoneStackName}-WorkflowBucket
+                  - Fn::Sub:
+                      - "arn:aws:s3:::${INPUT_BUCKET}"
+                      - INPUT_BUCKET:
+                          Fn::ImportValue:
+                            !Sub ${ZoneStackName}-InputBucket
+                  - Fn::Sub:
+                      - "arn:aws:s3:::${INPUT_BUCKET}/*"
+                      - INPUT_BUCKET:
+                          Fn::ImportValue:
+                            !Sub ${ZoneStackName}-InputBucket
+
+              - Effect: Allow
+                Action:
+                - iam:CreateServiceLinkedRole
+                - iam:AttachRolePolicy
+                - iam:PutRolePolicy
+                Resource:
+                   - !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/s3.data-source.lustre.fsx.amazonaws.com/*
+
+
     Metadata:
       cfn_nag:
         rules_to_suppress:
